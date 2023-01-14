@@ -13,29 +13,39 @@ struct MallocMetaData
 };
 size_t META_DATA_SIZE = sizeof(MallocMetaData);
 MallocMetaData *first_allocation = NULL;
+void remove_block(MallocMetaData *ptr)
+{
+    if (ptr->prev)
+        ptr->prev->next = ptr->next;
+    if (ptr->next)
+        ptr->next->prev = ptr->prev;
+}
+void insert_block(MallocMetaData *ptr)
+{
+    MallocMetaData *larger = NULL;
+    MallocMetaData *temp = first_allocation;
+    while (temp != NULL)
+    {
+        if (!larger && temp->size > ptr->size)
+        {
+            larger = temp;
+        }
+
+        temp = temp->next;
+    }
+    ptr->next = larger;
+    ptr->prev = larger->prev;
+    if (larger)
+    {
+        if (larger->prev)
+            larger->prev->next = ptr;
+        larger->prev = ptr;
+    }
+}
 void split_block(MallocMetaData *ptr, size_t diff)
 {
     if (diff >= 128 + META_DATA_SIZE)
     {
-        MallocMetaData *larger = NULL;
-        MallocMetaData *temp = first_allocation;
-        while (temp != NULL)
-        {
-            if (!larger && temp->size > diff - META_DATA_SIZE)
-            {
-                larger = temp;
-            }
-
-            temp = temp->next;
-        }
-        *(MallocMetaData *)ptr = {diff - META_DATA_SIZE, true, larger, NULL};
-        if (larger)
-            larger->prev = ptr;
-        if (larger->prev)
-        {
-            ptr->prev = larger->prev;
-            larger->prev->next = ptr;
-        }
     }
 }
 void *smalloc(size_t size)
@@ -51,6 +61,7 @@ void *smalloc(size_t size)
         {
             temp->is_free = false;
             split_block(temp + META_DATA_SIZE + size, temp->size - META_DATA_SIZE - size);
+            temp->size = size;
             return temp + META_DATA_SIZE;
         }
         else if (!larger && temp->size > size)
@@ -87,6 +98,29 @@ void *scalloc(size_t num, size_t size)
         }
     }
     return ptr;
+}
+void merge_free_block(MallocMetaData *ptr)
+{
+    MallocMetaData *prev = NULL;
+    MallocMetaData *next = NULL;
+    MallocMetaData *temp = first_allocation;
+    while (temp)
+    {
+        if (temp + META_DATA_SIZE + temp->size == ptr)
+            prev = temp;
+        if (ptr + META_DATA_SIZE + ptr->size == temp)
+            next = temp;
+    }
+    if (next)
+    {
+        if (next->is_free)
+            ptr->next =
+                ptr->size += META_DATA_SIZE + next->size;
+    }
+    if (prev)
+    {
+        if (prev->is_free)
+    }
 }
 void sfree(void *ptr)
 {
