@@ -48,57 +48,6 @@ void split_block(MallocMetaData *ptr, size_t diff)
     {
     }
 }
-void *smalloc(size_t size)
-{
-    MallocMetaData *ptr = NULL;
-    if (size == 0 || size > pow(10, 8))
-        return ptr;
-    MallocMetaData *temp = first_allocation;
-    MallocMetaData *larger = NULL;
-    while (temp != NULL)
-    {
-        if (temp->is_free && temp->size >= size)
-        {
-            temp->is_free = false;
-            split_block(temp + META_DATA_SIZE + size, temp->size - META_DATA_SIZE - size);
-            temp->size = size;
-            return temp + META_DATA_SIZE;
-        }
-        else if (!larger && temp->size > size)
-        {
-            larger = temp;
-        }
-
-        temp = temp->next;
-    }
-    ptr = (MallocMetaData *)sbrk(size + META_DATA_SIZE);
-    if (*(int *)ptr == -1)
-        return ptr;
-    *(MallocMetaData *)ptr = {size, false, larger, NULL};
-    if (larger)
-        larger->prev = ptr;
-    if (larger->prev)
-    {
-        ptr->prev = larger->prev;
-        larger->prev->next = ptr;
-    }
-
-    if (!first_allocation)
-        first_allocation = (MallocMetaData *)ptr;
-    return ptr + size;
-}
-void *scalloc(size_t num, size_t size)
-{
-    void *ptr = smalloc(size * num);
-    if (ptr)
-    {
-        for (size_t i = 0; i < num; i++)
-        {
-            memset((int *)ptr, 0, size);
-        }
-    }
-    return ptr;
-}
 void merge_free_block(MallocMetaData *ptr)
 {
     MallocMetaData *prev = NULL;
@@ -122,31 +71,75 @@ void merge_free_block(MallocMetaData *ptr)
         if (prev->is_free)
     }
 }
+void *smalloc(size_t size)
+{
+    MallocMetaData *ptr = NULL;
+    if (size == 0 || size > pow(10, 8))
+        return ptr;
+    MallocMetaData *temp = first_allocation;
+    MallocMetaData *last = NULL;
+    while (temp)
+    {
+        if (temp->is_free && temp->size >= size)
+        {
+            temp->is_free = false;
+            return (void *)((size_t)temp + sizeof(MallocMetaData));
+        }
+        last = temp;
+        temp = temp->next;
+    }
+    ptr = (MallocMetaData *)sbrk(size + sizeof(MallocMetaData));
+    if (*(int *)ptr == -1)
+        return ptr;
+    *ptr = {size, false, NULL, last};
+    if (last)
+        last->next = ptr;
+    if (!first_allocation)
+        first_allocation = (MallocMetaData *)ptr;
+    return (void *)((size_t)ptr + (size_t)sizeof(MallocMetaData));
+}
+void *scalloc(size_t num, size_t size)
+{
+    void *ptr = smalloc(size * num);
+    if (ptr)
+    {
+        memset(ptr, 0, size * num);
+    }
+    return ptr;
+}
 void sfree(void *ptr)
 {
-    MallocMetaData *block = (MallocMetaData *)(ptr - META_DATA_SIZE);
+    MallocMetaData *block = (MallocMetaData *)((size_t)ptr - sizeof(MallocMetaData));
     if (block)
+    {
         block->is_free = true;
+    }
 }
 void *srealloc(void *oldp, size_t size)
 {
-    void *ptr = NULL;
     if (size == 0 || size > pow(10, 8))
-        return ptr;
+        return NULL;
     if (!oldp)
     {
         return smalloc(size);
     }
-    MallocMetaData *current_block = (MallocMetaData *)(oldp - META_DATA_SIZE);
-    if (size <= current_block->size)
+    MallocMetaData *ptr = (MallocMetaData *)((size_t)oldp - sizeof(MallocMetaData));
+    printf("given size %d\n",(int)size);
+    printf("ptr size %d\n",(int)(ptr->size));
+    if(ptr)
     {
-        void *new_block = smalloc(size);
-        if (new_block)
+        if (size >= ptr->size)
         {
-            memmove(new_block, oldp, size);
-            sfree(oldp);
+            void *new_block = smalloc(size);
+            if (new_block)
+            {
+                memmove(new_block, oldp, size);
+                sfree(oldp);
+                return new_block;
+            }
         }
     }
+    return (void *)((size_t)ptr + sizeof(MallocMetaData));
 }
 size_t _num_free_blocks()
 {
@@ -194,19 +187,18 @@ size_t _num_allocated_bytes()
     }
     return allocated_bytes;
 }
-size_t _num_meta_data_bytes()
-{
-    return (int)_num_allocated_blocks * META_DATA_SIZE;
-}
 size_t _size_meta_data()
 {
-    return META_DATA_SIZE;
+    return sizeof(MallocMetaData);
 }
-
-int main()
+size_t _num_meta_data_bytes()
 {
-    int *test = (int *)scalloc(5, 1);
-    std::cout << test[0] << std::endl;
-    std::cout << test[1] << std::endl;
-    exit(1);
+    return _num_allocated_blocks() * _size_meta_data();
 }
+// int main()
+// {
+//     int *test = (int *)scalloc(5, 1);
+//     std::cout << test[0] << std::endl;
+//     std::cout << test[1] << std::endl;
+//     exit(1);
+// }
