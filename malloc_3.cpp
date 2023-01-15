@@ -1,3 +1,5 @@
+#include <cstdlib>
+#include <climits>
 #include <stdlib.h>
 #include <unistd.h>
 #include <math.h>
@@ -12,12 +14,22 @@ struct MallocMetaData
     MallocMetaData *next;
     MallocMetaData *prev;
     bool is_mmapped;
+    int32_t cookie;
 };
 size_t META_DATA_SIZE = sizeof(MallocMetaData);
 size_t MAX_SIZE = pow(10, 8);
+int COOKIE = rand() + (rand() % 2) * INT32_MIN;
 MallocMetaData *first_allocation = NULL;
 MallocMetaData *first_allocation_map = NULL;
 MallocMetaData *wilderness_block = NULL;
+void check_cookie_valid(MallocMetaData *ptr)
+{
+    if (ptr)
+    {
+        if (ptr->cookie != COOKIE)
+            exit(0xdeadbeef);
+    }
+}
 void remove_block(MallocMetaData *ptr)
 {
     if (ptr->prev)
@@ -31,6 +43,7 @@ void insert_block(MallocMetaData *ptr)
     MallocMetaData *temp = first_allocation;
     while (temp)
     {
+        check_cookie_valid(temp);
         if (!larger && temp->size > ptr->size)
         {
             larger = temp;
@@ -38,6 +51,8 @@ void insert_block(MallocMetaData *ptr)
 
         temp = temp->next;
     }
+    check_cookie_valid(ptr);
+    check_cookie_valid(temp);
     ptr->next = larger;
     ptr->prev = larger->prev;
     if (larger)
@@ -97,6 +112,10 @@ void merge_free_block(MallocMetaData *ptr)
             next = temp;
         temp += META_DATA_SIZE + temp->size;
     }
+    check_cookie_valid(temp);
+    check_cookie_valid(ptr);
+    check_cookie_valid(next);
+    check_cookie_valid(prev);
     if (next)
     {
         if (next->is_free)
@@ -121,7 +140,7 @@ void merge_free_block(MallocMetaData *ptr)
 void *memory_map(size_t size)
 {
     MallocMetaData *ptr = (MallocMetaData *)mmap(NULL, size, PROT_READ | PROT_READ, MAP_ANONYMOUS, -1, 0);
-    *ptr = {size, false, NULL, NULL, true};
+    *ptr = {size, false, NULL, NULL, true, COOKIE};
     insert_block_map(ptr);
     return (void *)((size_t)ptr + META_DATA_SIZE);
 }
@@ -136,11 +155,13 @@ void *smalloc(size_t size)
         return memory_map(size);
     }
     MallocMetaData *temp = first_allocation;
+    check_cookie_valid(temp);
     MallocMetaData *last = NULL;
     while (temp)
     {
         if (temp->is_free && temp->size >= size)
         {
+            check_cookie_valid(temp);
             split_block(temp, size);
             temp->is_free = false;
             return (void *)((size_t)temp + sizeof(MallocMetaData));
@@ -148,6 +169,7 @@ void *smalloc(size_t size)
         last = temp;
         temp = temp->next;
     }
+    check_cookie_valid(wilderness_block);
     if (wilderness_block->is_free)
     {
         ptr = wilderness_block;
@@ -158,7 +180,7 @@ void *smalloc(size_t size)
         ptr = (MallocMetaData *)sbrk(size + sizeof(MallocMetaData));
     if (*(int *)ptr == -1)
         return ptr;
-    *ptr = {size, false, NULL, NULL, false};
+    *ptr = {size, false, NULL, NULL, false, COOKIE};
     insert_block(ptr);
     wilderness_block = ptr;
     return (void *)((size_t)ptr + (size_t)sizeof(MallocMetaData));
@@ -268,8 +290,4 @@ size_t _num_meta_data_bytes()
 }
 // int main()
 // {
-//     int *test = (int *)scalloc(5, 1);
-//     std::cout << test[0] << std::endl;
-//     std::cout << test[1] << std::endl;
-//     exit(1);
 // }
