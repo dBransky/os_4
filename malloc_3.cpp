@@ -99,15 +99,12 @@ void split_block(MallocMetaData *ptr, size_t new_size)
         insert_block(ptr);
     }
 }
-void merge_free_block(MallocMetaData *ptr)
+MallocMetaData *merge_higer(MallocMetaData *ptr)
 {
-    MallocMetaData *prev = NULL;
     MallocMetaData *next = NULL;
     MallocMetaData *temp = first_allocation;
     while (temp)
     {
-        if (temp + META_DATA_SIZE + temp->size == ptr)
-            prev = temp;
         if (ptr + META_DATA_SIZE + ptr->size == temp)
             next = temp;
         temp += META_DATA_SIZE + temp->size;
@@ -115,7 +112,6 @@ void merge_free_block(MallocMetaData *ptr)
     check_cookie_valid(temp);
     check_cookie_valid(ptr);
     check_cookie_valid(next);
-    check_cookie_valid(prev);
     if (next)
     {
         if (next->is_free)
@@ -126,6 +122,20 @@ void merge_free_block(MallocMetaData *ptr)
             insert_block(ptr);
         }
     }
+}
+MallocMetaData *merge_lower(MallocMetaData *ptr)
+{
+    MallocMetaData *prev = NULL;
+    MallocMetaData *temp = first_allocation;
+    while (temp)
+    {
+        if (temp + META_DATA_SIZE + temp->size == ptr)
+            prev = temp;
+        temp += META_DATA_SIZE + temp->size;
+    }
+    check_cookie_valid(temp);
+    check_cookie_valid(ptr);
+    check_cookie_valid(prev);
     if (prev)
     {
         if (prev->is_free)
@@ -205,7 +215,11 @@ void sfree(void *ptr)
             munmap(block, block->size);
         }
         else
+        {
             block->is_free = true;
+            merge_higer(block);
+            merge_lower(block);
+        }
     }
 }
 void *srealloc(void *oldp, size_t size)
@@ -223,6 +237,11 @@ void *srealloc(void *oldp, size_t size)
     {
         if (size >= ptr->size)
         {
+            ptr = merge_lower(ptr);
+            if (ptr->size >= size)
+            {
+                return (void *)((size_t)ptr + sizeof(MallocMetaData));
+            }
             void *new_block = smalloc(size);
             if (new_block)
             {
