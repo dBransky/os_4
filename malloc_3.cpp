@@ -99,7 +99,7 @@ void split_block(MallocMetaData *ptr, size_t new_size)
         insert_block(ptr);
     }
 }
-MallocMetaData *merge_higer(MallocMetaData *ptr)
+MallocMetaData *merge_higher(MallocMetaData *ptr)
 {
     MallocMetaData *next = NULL;
     MallocMetaData *temp = first_allocation;
@@ -146,6 +146,31 @@ MallocMetaData *merge_lower(MallocMetaData *ptr)
             insert_block(prev);
         }
     }
+}
+MallocMetaData *get_adj_lower(MallocMetaData *ptr)
+{
+    MallocMetaData *prev = NULL;
+    MallocMetaData *temp = first_allocation;
+    while (temp)
+    {
+        if (temp + META_DATA_SIZE + temp->size == ptr)
+            prev = temp;
+        temp += META_DATA_SIZE + temp->size;
+    }
+    return prev;
+}
+MallocMetaData *get_adj_higher(MallocMetaData *ptr)
+{
+
+    MallocMetaData *next = NULL;
+    MallocMetaData *temp = first_allocation;
+    while (temp)
+    {
+        if (ptr + META_DATA_SIZE + ptr->size == temp)
+            next = temp;
+        temp += META_DATA_SIZE + temp->size;
+    }
+    return next;
 }
 void *memory_map(size_t size)
 {
@@ -217,7 +242,7 @@ void sfree(void *ptr)
         else
         {
             block->is_free = true;
-            merge_higer(block);
+            merge_higher(block);
             merge_lower(block);
         }
     }
@@ -237,10 +262,51 @@ void *srealloc(void *oldp, size_t size)
     {
         if (size >= ptr->size)
         {
-            ptr = merge_lower(ptr);
-            if (ptr->size >= size)
+            if (wilderness_block == ptr)
             {
+                ptr = merge_lower(ptr);
+                wilderness_block = ptr;
+                wilderness_block->size += size - wilderness_block->size;
+                sbrk(size - wilderness_block->size);
                 return (void *)((size_t)ptr + sizeof(MallocMetaData));
+            }
+            MallocMetaData *lower = get_adj_lower(ptr);
+            if (lower)
+            {
+                if (lower->is_free && lower->size + META_DATA_SIZE + ptr->size >= size)
+                {
+                    ptr = merge_lower(ptr);
+                    return (void *)((size_t)ptr + sizeof(MallocMetaData));
+                }
+            }
+            MallocMetaData *higher = get_adj_higher(ptr);
+            if (higher)
+            {
+                if (higher->is_free && higher->size + META_DATA_SIZE + ptr->size >= size)
+                {
+                    ptr = merge_higher(ptr);
+                    return (void *)((size_t)ptr + sizeof(MallocMetaData));
+                }
+            }
+            if (higher && lower)
+            {
+                if (higher->is_free && lower->is_free && (higher->size + lower->size + 2 * META_DATA_SIZE > size))
+                {
+                    ptr = merge_higher(ptr);
+                    ptr = merge_lower(ptr);
+                    return (void *)((size_t)ptr + sizeof(MallocMetaData));
+                }
+            }
+            if (higher == wilderness_block)
+            {
+                if (higher->is_free)
+                {
+                    ptr = merge_higher(ptr);
+                    ptr = merge_lower(ptr);
+                    wilderness_block = ptr;
+                    sbrk(size - ptr->size);
+                    ptr->size += (size - ptr->size);
+                }
             }
             void *new_block = smalloc(size);
             if (new_block)
