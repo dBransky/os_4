@@ -256,6 +256,15 @@ void *srealloc(void *oldp, size_t size)
         return smalloc(size);
     }
     MallocMetaData *ptr = (MallocMetaData *)((size_t)oldp - sizeof(MallocMetaData));
+    check_cookie_valid(ptr);
+    if (ptr->is_mmapped)
+    {
+        MallocMetaData *new_block = (MallocMetaData *)((size_t)(memory_map(size)) - (size_t)META_DATA_SIZE);
+        check_cookie_valid(new_block);
+        memmove(new_block, ptr, size);
+        sfree(ptr);
+        return (void *)((size_t)new_block + sizeof(MallocMetaData));
+    }
     printf("given size %d\n", (int)size);
     printf("ptr size %d\n", (int)(ptr->size));
     if (ptr)
@@ -268,23 +277,28 @@ void *srealloc(void *oldp, size_t size)
                 wilderness_block = ptr;
                 wilderness_block->size += size - wilderness_block->size;
                 sbrk(size - wilderness_block->size);
+                split_block(ptr, size);
                 return (void *)((size_t)ptr + sizeof(MallocMetaData));
             }
             MallocMetaData *lower = get_adj_lower(ptr);
             if (lower)
             {
+                check_cookie_valid(lower);
                 if (lower->is_free && lower->size + META_DATA_SIZE + ptr->size >= size)
                 {
                     ptr = merge_lower(ptr);
+                    split_block(ptr, size);
                     return (void *)((size_t)ptr + sizeof(MallocMetaData));
                 }
             }
             MallocMetaData *higher = get_adj_higher(ptr);
             if (higher)
             {
+                check_cookie_valid(higher);
                 if (higher->is_free && higher->size + META_DATA_SIZE + ptr->size >= size)
                 {
                     ptr = merge_higher(ptr);
+                    split_block(ptr, size);
                     return (void *)((size_t)ptr + sizeof(MallocMetaData));
                 }
             }
@@ -294,6 +308,7 @@ void *srealloc(void *oldp, size_t size)
                 {
                     ptr = merge_higher(ptr);
                     ptr = merge_lower(ptr);
+                    split_block(ptr, size);
                     return (void *)((size_t)ptr + sizeof(MallocMetaData));
                 }
             }
@@ -306,6 +321,8 @@ void *srealloc(void *oldp, size_t size)
                     wilderness_block = ptr;
                     sbrk(size - ptr->size);
                     ptr->size += (size - ptr->size);
+                    split_block(ptr, size);
+                    return (void *)((size_t)ptr + sizeof(MallocMetaData));
                 }
             }
             void *new_block = smalloc(size);
@@ -317,6 +334,8 @@ void *srealloc(void *oldp, size_t size)
             }
         }
     }
+    if (!ptr->is_mmapped)
+        split_block(ptr, size);
     return (void *)((size_t)ptr + sizeof(MallocMetaData));
 }
 size_t _num_free_blocks()
