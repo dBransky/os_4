@@ -82,19 +82,6 @@ void remove_block_map(MallocMetaData *ptr)
     if (ptr->next)
         ptr->next->prev = ptr->prev;
 }
-void split_block(MallocMetaData *ptr, size_t new_size)
-{
-    if (ptr->size - new_size >= 128 + META_DATA_SIZE)
-    {
-        remove_block(ptr);
-        MallocMetaData *new_block = (MallocMetaData *)((size_t)ptr + new_size + META_DATA_SIZE);
-        new_block->is_free = true;
-        new_block->size = ptr->size - new_size - META_DATA_SIZE;
-        ptr->size = new_size;
-        insert_block(new_block);
-        insert_block(ptr);
-    }
-}
 MallocMetaData *merge_higher(MallocMetaData *ptr)
 {
     MallocMetaData *next = NULL;
@@ -102,7 +89,6 @@ MallocMetaData *merge_higher(MallocMetaData *ptr)
     {
         if ((void *)((size_t)ptr + META_DATA_SIZE + ptr->size) == temp)
             next = temp;
-        temp = temp->next;
     }
     check_cookie_valid(ptr);
     check_cookie_valid(next);
@@ -127,7 +113,6 @@ MallocMetaData *merge_lower(MallocMetaData *ptr)
     {
         if ((void *)((size_t)temp + META_DATA_SIZE + temp->size) == ptr)
             prev = temp;
-        temp = temp->next;
     }
     check_cookie_valid(ptr);
     check_cookie_valid(prev);
@@ -146,14 +131,26 @@ MallocMetaData *merge_lower(MallocMetaData *ptr)
     }
     return ptr;
 }
+void split_block(MallocMetaData *ptr, size_t new_size)
+{
+    if (ptr->size - new_size >= 128 + META_DATA_SIZE)
+    {
+        remove_block(ptr);
+        MallocMetaData *new_block = (MallocMetaData *)((size_t)ptr + new_size + META_DATA_SIZE);
+        *new_block = {ptr->size - new_size - META_DATA_SIZE, true, NULL, NULL, false, COOKIE};
+        ptr->size = new_size;
+        insert_block(new_block);
+        insert_block(ptr);
+        merge_higher(new_block);
+    }
+}
 MallocMetaData *get_adj_lower(MallocMetaData *ptr)
 {
     MallocMetaData *prev = NULL;
     for (MallocMetaData *temp : blocks)
     {
-        if (temp + META_DATA_SIZE + temp->size == ptr)
+        if ((void *)((size_t)temp + META_DATA_SIZE + temp->size) == ptr)
             prev = temp;
-        temp += META_DATA_SIZE + temp->size;
     }
     return prev;
 }
@@ -163,9 +160,8 @@ MallocMetaData *get_adj_higher(MallocMetaData *ptr)
     MallocMetaData *next = NULL;
     for (MallocMetaData *temp : blocks)
     {
-        if (ptr + META_DATA_SIZE + ptr->size == temp)
+        if ((void *)((size_t)ptr + META_DATA_SIZE + ptr->size) == temp)
             next = temp;
-        temp += META_DATA_SIZE + temp->size;
     }
     return next;
 }
@@ -266,28 +262,48 @@ void *srealloc(void *oldp, size_t size)
         return smalloc(size);
     }
     MallocMetaData *ptr = (MallocMetaData *)((size_t)oldp - sizeof(MallocMetaData));
+    MallocMetaData *oldp2 = ptr;
+
     check_cookie_valid(ptr);
     if (ptr->is_mmapped)
     {
-        MallocMetaData *new_block = (MallocMetaData *)((size_t)(memory_map(size)) - (size_t)META_DATA_SIZE);
-        check_cookie_valid(new_block);
-        memmove(new_block, ptr, size);
-        sfree(ptr);
-        return (void *)((size_t)new_block + sizeof(MallocMetaData));
+        if (ptr->size < size)
+        {
+            MallocMetaData *new_block = (MallocMetaData *)((size_t)(memory_map(size)) - (size_t)META_DATA_SIZE);
+            check_cookie_valid(new_block);
+            memmove((void *)((size_t)new_block + META_DATA_SIZE), oldp, std::min(size,oldp2->size));
+            sfree(ptr);
+            new_block->is_free = false;
+            return (void *)((size_t)new_block + sizeof(MallocMetaData));
+        }
+        if (size < 128 * 1024)
+        {
+            void *new_block = smalloc(size);
+            memmove((new_block), oldp, size);
+            sfree(oldp);
+            return new_block;
+        }
+        ptr->size = size;
+        return oldp;
     }
     printf("given size %d\n", (int)size);
     printf("ptr size %d\n", (int)(ptr->size));
     if (ptr)
     {
-        if (size >= ptr->size)
+        if (size > ptr->size)
         {
             if (wilderness_block == ptr)
             {
                 ptr = merge_lower(ptr);
+                memmove((void *)((size_t)ptr + META_DATA_SIZE), oldp, std::min(size,oldp2->size));
                 wilderness_block = ptr;
-                wilderness_block->size += size - wilderness_block->size;
-                sbrk(size - wilderness_block->size);
-                split_block(ptr, size);
+                if (wilderness_block->size < size)
+                {
+                    sbrk(size - wilderness_block->size);
+                    wilderness_block->size += size - wilderness_block->size;
+                    split_block(ptr, size);
+                }
+                ptr->is_free = false;
                 return (void *)((size_t)ptr + sizeof(MallocMetaData));
             }
             MallocMetaData *lower = get_adj_lower(ptr);
@@ -297,7 +313,9 @@ void *srealloc(void *oldp, size_t size)
                 if (lower->is_free && lower->size + META_DATA_SIZE + ptr->size >= size)
                 {
                     ptr = merge_lower(ptr);
+                    memmove((void *)((size_t)ptr + META_DATA_SIZE), oldp, std::min(size,oldp2->size));
                     split_block(ptr, size);
+                    ptr->is_free = false;
                     return (void *)((size_t)ptr + sizeof(MallocMetaData));
                 }
             }
@@ -309,16 +327,19 @@ void *srealloc(void *oldp, size_t size)
                 {
                     ptr = merge_higher(ptr);
                     split_block(ptr, size);
+                    ptr->is_free = false;
                     return (void *)((size_t)ptr + sizeof(MallocMetaData));
                 }
             }
             if (higher && lower)
             {
-                if (higher->is_free && lower->is_free && (higher->size + lower->size + 2 * META_DATA_SIZE > size))
+                if (higher->is_free && lower->is_free && (higher->size + lower->size + ptr->size + 2 * META_DATA_SIZE >= size))
                 {
                     ptr = merge_higher(ptr);
                     ptr = merge_lower(ptr);
+                    memmove((void *)((size_t)ptr + META_DATA_SIZE), oldp, std::min(size,oldp2->size));
                     split_block(ptr, size);
+                    ptr->is_free = false;
                     return (void *)((size_t)ptr + sizeof(MallocMetaData));
                 }
             }
@@ -328,17 +349,18 @@ void *srealloc(void *oldp, size_t size)
                 {
                     ptr = merge_higher(ptr);
                     ptr = merge_lower(ptr);
+                    memmove((void *)((size_t)ptr + META_DATA_SIZE), oldp, std::min(size,oldp2->size));
                     wilderness_block = ptr;
                     sbrk(size - ptr->size);
                     ptr->size += (size - ptr->size);
-                    split_block(ptr, size);
+                    ptr->is_free = false;
                     return (void *)((size_t)ptr + sizeof(MallocMetaData));
                 }
             }
             void *new_block = smalloc(size);
             if (new_block)
             {
-                memmove(new_block, oldp, size);
+                memmove((void *)((size_t)new_block), oldp, std::min(size,oldp2->size));
                 sfree(oldp);
                 return new_block;
             }
@@ -346,6 +368,7 @@ void *srealloc(void *oldp, size_t size)
     }
     if (!ptr->is_mmapped)
         split_block(ptr, size);
+    ptr->is_free = false;
     return (void *)((size_t)ptr + sizeof(MallocMetaData));
 }
 size_t _num_free_blocks()
@@ -423,26 +446,63 @@ size_t _num_meta_data_bytes()
         printf("%d==%d\n", _num_free_blocks(), free_blocks);                                \
         printf("%d==%d\n", _num_meta_data_bytes(), (_size_meta_data() * allocated_blocks)); \
     } while (0)
-int main()
+#define verify_size(base)                                                                          \
+    do                                                                                             \
+    {                                                                                              \
+        void *after = sbrk(0);                                                                     \
+        printf("size is\n");                                                                       \
+        printf("%d==%d\n", _num_allocated_bytes() + (_size_meta_data() * _num_allocated_blocks()), \
+               (size_t)after - (size_t)base);                                                      \
+    } while (0)
+template <typename T>
+void populate_array(T *array, size_t len)
 {
-    verify_blocks(0, 0, 0, 0);
-    void *base = sbrk(0);
-    char *a = (char *)smalloc(16 + MIN_SPLIT_SIZE + _size_meta_data() - 8);
-    // REQUIRE(a != nullptr);
-    verify_blocks(1, 16 + MIN_SPLIT_SIZE + _size_meta_data() - 8, 0, 0);
-    // verify_size(base);
-
-    sfree(a);
-    verify_blocks(1, 16 + MIN_SPLIT_SIZE + _size_meta_data() - 8, 1, 16 + MIN_SPLIT_SIZE + _size_meta_data() - 8);
-    // verify_size(base);
-
-    char *b = (char *)smalloc(16);
-    // REQUIRE(b != nullptr);
-    // REQUIRE(b == a);
-    verify_blocks(1, 16 + MIN_SPLIT_SIZE + _size_meta_data() - 8, 0, 0);
-    // verify_size(base);
-
-    sfree(b);
-    verify_blocks(1, 16 + MIN_SPLIT_SIZE + _size_meta_data() - 8, 1, 16 + MIN_SPLIT_SIZE + _size_meta_data() - 8);
-    // verify_size(base);
+    for (size_t i = 0; i < len; i++)
+    {
+        array[i] = (T)i;
+    }
 }
+template <typename T>
+void validate_array(T *array, size_t len)
+{
+    for (size_t i = 0; i < len; i++)
+    {
+        assert((array[i] == (T)i));
+    }
+}
+#define verify_size_with_large_blocks(base, diff)     \
+    do                                                \
+    {                                                 \
+        void *after = sbrk(0);                        \
+        assert(diff == (size_t)after - (size_t)base); \
+    } while (0)
+
+// int main()
+// {
+//     verify_blocks(0, 0, 0, 0);
+//     void *base = sbrk(0);
+//     char *a = (char *)smalloc(MMAP_THRESHOLD);
+//     assert(a != nullptr);
+
+//     verify_blocks(1, MMAP_THRESHOLD, 0, 0);
+//     verify_size_with_large_blocks(base, 0);
+//     populate_array(a, MMAP_THRESHOLD);
+
+//     char *b = (char *)srealloc(a, MMAP_THRESHOLD);
+//     assert(b != nullptr);
+//     assert(b == a);
+//     verify_blocks(1, MMAP_THRESHOLD, 0, 0);
+//     verify_size_with_large_blocks(base, 0);
+//     validate_array(b, MMAP_THRESHOLD);
+
+//     char *c = (char *)srealloc(b, 32);
+//     assert(c != nullptr);
+//     assert(c != b);
+//     verify_blocks(1, 32, 0, 0);
+//     verify_size(base);
+//     validate_array(c, 32);
+
+//     sfree(c);
+//     verify_blocks(1, 32, 1, 32);
+//     verify_size(base);
+// }
