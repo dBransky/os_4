@@ -141,7 +141,7 @@ void split_block(MallocMetaData *ptr, size_t new_size)
         ptr->size = new_size;
         insert_block(new_block);
         insert_block(ptr);
-        merge_higher(new_block);
+        // merge_higher(new_block);
     }
 }
 MallocMetaData *get_adj_lower(MallocMetaData *ptr)
@@ -271,7 +271,7 @@ void *srealloc(void *oldp, size_t size)
         {
             MallocMetaData *new_block = (MallocMetaData *)((size_t)(memory_map(size)) - (size_t)META_DATA_SIZE);
             check_cookie_valid(new_block);
-            memmove((void *)((size_t)new_block + META_DATA_SIZE), oldp, std::min(size,oldp2->size));
+            memmove((void *)((size_t)new_block + META_DATA_SIZE), oldp, std::min(size, oldp2->size));
             sfree(ptr);
             new_block->is_free = false;
             return (void *)((size_t)new_block + sizeof(MallocMetaData));
@@ -295,7 +295,7 @@ void *srealloc(void *oldp, size_t size)
             if (wilderness_block == ptr)
             {
                 ptr = merge_lower(ptr);
-                memmove((void *)((size_t)ptr + META_DATA_SIZE), oldp, std::min(size,oldp2->size));
+                memmove((void *)((size_t)ptr + META_DATA_SIZE), oldp, std::min(size, oldp2->size));
                 wilderness_block = ptr;
                 if (wilderness_block->size < size)
                 {
@@ -313,7 +313,7 @@ void *srealloc(void *oldp, size_t size)
                 if (lower->is_free && lower->size + META_DATA_SIZE + ptr->size >= size)
                 {
                     ptr = merge_lower(ptr);
-                    memmove((void *)((size_t)ptr + META_DATA_SIZE), oldp, std::min(size,oldp2->size));
+                    memmove((void *)((size_t)ptr + META_DATA_SIZE), oldp, std::min(size, oldp2->size));
                     split_block(ptr, size);
                     ptr->is_free = false;
                     return (void *)((size_t)ptr + sizeof(MallocMetaData));
@@ -337,7 +337,7 @@ void *srealloc(void *oldp, size_t size)
                 {
                     ptr = merge_higher(ptr);
                     ptr = merge_lower(ptr);
-                    memmove((void *)((size_t)ptr + META_DATA_SIZE), oldp, std::min(size,oldp2->size));
+                    memmove((void *)((size_t)ptr + META_DATA_SIZE), oldp, std::min(size, oldp2->size));
                     split_block(ptr, size);
                     ptr->is_free = false;
                     return (void *)((size_t)ptr + sizeof(MallocMetaData));
@@ -349,7 +349,7 @@ void *srealloc(void *oldp, size_t size)
                 {
                     ptr = merge_higher(ptr);
                     ptr = merge_lower(ptr);
-                    memmove((void *)((size_t)ptr + META_DATA_SIZE), oldp, std::min(size,oldp2->size));
+                    memmove((void *)((size_t)ptr + META_DATA_SIZE), oldp, std::min(size, oldp2->size));
                     wilderness_block = ptr;
                     sbrk(size - ptr->size);
                     ptr->size += (size - ptr->size);
@@ -360,7 +360,7 @@ void *srealloc(void *oldp, size_t size)
             void *new_block = smalloc(size);
             if (new_block)
             {
-                memmove((void *)((size_t)new_block), oldp, std::min(size,oldp2->size));
+                memmove((void *)((size_t)new_block), oldp, std::min(size, oldp2->size));
                 sfree(oldp);
                 return new_block;
             }
@@ -477,32 +477,3 @@ void validate_array(T *array, size_t len)
         assert(diff == (size_t)after - (size_t)base); \
     } while (0)
 
-// int main()
-// {
-//     verify_blocks(0, 0, 0, 0);
-//     void *base = sbrk(0);
-//     char *a = (char *)smalloc(MMAP_THRESHOLD);
-//     assert(a != nullptr);
-
-//     verify_blocks(1, MMAP_THRESHOLD, 0, 0);
-//     verify_size_with_large_blocks(base, 0);
-//     populate_array(a, MMAP_THRESHOLD);
-
-//     char *b = (char *)srealloc(a, MMAP_THRESHOLD);
-//     assert(b != nullptr);
-//     assert(b == a);
-//     verify_blocks(1, MMAP_THRESHOLD, 0, 0);
-//     verify_size_with_large_blocks(base, 0);
-//     validate_array(b, MMAP_THRESHOLD);
-
-//     char *c = (char *)srealloc(b, 32);
-//     assert(c != nullptr);
-//     assert(c != b);
-//     verify_blocks(1, 32, 0, 0);
-//     verify_size(base);
-//     validate_array(c, 32);
-
-//     sfree(c);
-//     verify_blocks(1, 32, 1, 32);
-//     verify_size(base);
-// }
